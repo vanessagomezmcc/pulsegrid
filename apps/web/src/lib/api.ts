@@ -1,6 +1,9 @@
 'use client';
+
+import { createDemoSession, demoApi } from './demo-api';
 import { useSession } from './session';
 
+export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true';
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 export const WS_URL =
   process.env.NEXT_PUBLIC_WS_URL ?? API_BASE.replace(/^http/, 'ws') + '/ws';
@@ -16,6 +19,8 @@ export class ApiError extends Error {
 
 /** Session-aware fetch wrapper used by every TanStack Query hook. */
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  if (DEMO_MODE) return demoApi<T>(path, init);
+
   const sessionId = useSession.getState().sessionId;
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -25,20 +30,24 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
+
   if (res.status === 404 && sessionId && path !== '/api/demo/sessions') {
-    // Session may have expired server-side.
     const body = (await res.clone().json().catch(() => null)) as { message?: string } | null;
     if (body?.message?.includes('session')) useSession.getState().clear();
   }
+
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { message?: string } | null;
     throw new ApiError(res.status, body?.message ?? `Request failed (${res.status})`);
   }
+
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
 export async function createSession(): Promise<{ id: string; expiresAt: string }> {
+  if (DEMO_MODE) return createDemoSession();
+
   const res = await fetch(`${API_BASE}/api/demo/sessions`, { method: 'POST' });
   if (!res.ok) throw new ApiError(res.status, 'Could not create a demo session.');
   return (await res.json()) as { id: string; expiresAt: string };
