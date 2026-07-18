@@ -1,0 +1,151 @@
+name: pulsegrid
+
+x-go-service: &go-service
+  build: { context: ., dockerfile: infrastructure/docker/go.Dockerfile }
+  restart: unless-stopped
+  environment: &go-env
+    KAFKA_BROKERS: redpanda:9092
+    REDIS_URL: redis://redis:6379
+    ENVIRONMENT: demo
+    REGION: local
+  depends_on:
+    redpanda-init: { condition: service_completed_successfully }
+    redis: { condition: service_healthy }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pulsegrid
+      POSTGRES_PASSWORD: pulsegrid
+      POSTGRES_DB: pulsegrid
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulsegrid"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda start
+      - --overprovisioned
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --node-id 0
+      - --check=false
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+    ports: ["19092:19092"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health --exit-when-healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redpanda-init:
+    image: redpandadata/redpanda:v24.2.7
+    depends_on:
+      redpanda: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "/init/create-topics.sh"]
+    volumes: ["./infrastructure/redpanda:/init:ro"]
+
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment: { PGPASSWORD: pulsegrid }
+    entrypoint: >
+      /bin/sh -c "
+      for f in /sql/migrations/*.sql; do psql -h postgres -U pulsegrid -d pulsegrid -v ON_ERROR_STOP=1 -f $$f; done &&
+      psql -h postgres -U pulsegrid -d pulsegrid -v ON_ERROR_STOP=1 -f /sql/seed/seed.sql"
+    volumes: ["./packages/database:/sql:ro"]
+
+  auth-service:
+    <<: *go-service
+    environment: { <<: *go-env, SERVICE: auth-service, PORT: "7101", DOWNSTREAM_URL: "http://payment-service:7102" }
+    ports: ["7101:7101"]
+  payment-service:
+    <<: *go-service
+    environment: { <<: *go-env, SERVICE: payment-service, PORT: "7102", DOWNSTREAM_URL: "http://order-service:7103" }
+    ports: ["7102:7102"]
+  order-service:
+    <<: *go-service
+    environment: { <<: *go-env, SERVICE: order-service, PORT: "7103", DOWNSTREAM_URL: "http://notification-service:7104" }
+    ports: ["7103:7103"]
+  notification-service:
+    <<: *go-service
+    environment: { <<: *go-env, SERVICE: notification-service, PORT: "7104" }
+    ports: ["7104:7104"]
+  traffic-generator:
+    <<: *go-service
+    environment: { <<: *go-env, SERVICE: traffic-generator, PORT: "7110", AUTH_URL: "http://auth-service:7101", BASE_RPS: "3" }
+    ports: ["7110:7110"]
+    depends_on:
+      auth-service: { condition: service_started }
+      redis: { condition: service_healthy }
+  telemetry-processor:
+    <<: *go-service
+    environment:
+      <<: *go-env
+      SERVICE: telemetry-processor
+      PORT: "7120"
+      DATABASE_URL: postgres://pulsegrid:pulsegrid@postgres:5432/pulsegrid?sslmode=disable
+    ports: ["7120:7120"]
+    depends_on:
+      redpanda-init: { condition: service_completed_successfully }
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  api:
+    build: { context: ., dockerfile: infrastructure/docker/api.Dockerfile }
+    restart: unless-stopped
+    environment:
+      PORT: "4000"
+      DATABASE_URL: postgres://pulsegrid:pulsegrid@postgres:5432/pulsegrid?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: redpanda:9092
+      WEB_ORIGIN: http://localhost:3000
+      NOTIFICATION_URL: http://notification-service:7104
+    ports: ["4000:4000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/web.Dockerfile
+      args: { NEXT_PUBLIC_API_URL: "http://localhost:4000", NEXT_PUBLIC_WS_URL: "ws://localhost:4000/ws" }
+    restart: unless-stopped
+    ports: ["3000:3000"]
+    depends_on: [api]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes: ["./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes: ["./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro"]
+    ports: ["3001:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  pgdata:

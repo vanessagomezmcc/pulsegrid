@@ -1,0 +1,58 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm --filter @pulsegrid/event-schemas test
+      - run: pnpm --filter @pulsegrid/api typecheck
+      - run: pnpm --filter @pulsegrid/web typecheck
+      - run: pnpm --filter @pulsegrid/web build
+      - run: pnpm --filter @pulsegrid/api build
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.22" }
+      - run: test -z "$(gofmt -l go services)" || (gofmt -l go services && exit 1)
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./go/... -count=1
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [typescript, go]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f infrastructure/docker/go.Dockerfile .
+      - run: docker build -f infrastructure/docker/api.Dockerfile .
+      - run: docker build -f infrastructure/docker/web.Dockerfile .
+
+  e2e-smoke:
+    # Full-stack boot + Playwright smoke. Kept non-blocking because it needs
+    # several GB of images; promote to required once cached.
+    runs-on: ubuntu-latest
+    needs: [docker]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up --build -d
+      - run: timeout 180 bash -c 'until curl -sf http://localhost:4000/readyz; do sleep 5; done'
+      - run: timeout 120 bash -c 'until curl -sf http://localhost:3000; do sleep 5; done'
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: cd tests/e2e && npm install && npx playwright install --with-deps chromium && npx playwright test
+      - run: docker compose down -v
+        if: always()

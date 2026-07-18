@@ -1,0 +1,28 @@
+{
+  "title": "PulseGrid Pipeline",
+  "uid": "pulsegrid-pipeline",
+  "schemaVersion": 39,
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries", "title": "Service request rate (per service)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{ "expr": "sum by (service) (rate(pulsegrid_service_requests_total[1m]))" }]
+    },
+    {
+      "type": "timeseries", "title": "Processor events consumed by outcome",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [{ "expr": "sum by (outcome) (rate(pulsegrid_processor_events_total[1m]))" }]
+    },
+    {
+      "type": "timeseries", "title": "Generated requests by flow",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [{ "expr": "sum by (flow) (rate(pulsegrid_generated_requests_total[1m]))" }]
+    },
+    {
+      "type": "timeseries", "title": "Processor last-event age (lag proxy, seconds)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [{ "expr": "pulsegrid_processor_last_event_age_seconds" }]
+    }
+  ]
+}

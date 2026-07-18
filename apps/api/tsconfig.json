@@ -1,0 +1,15 @@
+{
+  "extends": "@pulsegrid/typescript-config/base.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "declaration": false,
+    "sourceMap": true,
+    "incremental": true
+  },
+  "include": ["src"]
+}
